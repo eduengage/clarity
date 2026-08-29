@@ -76,6 +76,7 @@ export const tryAsync = async (
     const response = await fetch(input, init);
 
     if (!response.ok) {
+      await response.body?.cancel();
       console.error(`Microsoft Clarity endpoint request failed with HTTP ${response.status}`);
       return textResult(describeHttpError(response.status));
     }
