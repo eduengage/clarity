@@ -69,6 +69,23 @@ for (const [status, expected] of [
   });
 }
 
+test("tryAsync cancels failed response bodies before returning", async () => {
+  let cancelled = false;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 503,
+    body: {
+      cancel: async () => {
+        cancelled = true;
+      },
+    },
+  });
+
+  const result = await tryAsync("https://clarity.microsoft.com/mcp/dashboard/query");
+  assert.equal(cancelled, true);
+  assert.match(result.content[0].text, /service error/);
+});
+
 test("describeHttpError handles other client errors without exposing response bodies", () => {
   assert.equal(
     describeHttpError(400),
