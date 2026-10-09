@@ -20,6 +20,13 @@ const CONFIG_PATHS = [
 let _cached: AccountsConfig | null = null;
 
 /**
+ * Reset cached accounts configuration (useful for testing).
+ */
+export function resetAccountsCache(): void {
+  _cached = null;
+}
+
+/**
  * Load accounts from config file, CLI args, or env vars.
  * Priority:
  *   1. --accounts-file=/path/to/accounts.json
@@ -31,21 +38,29 @@ export function loadAccounts(): AccountsConfig {
 
   // Check for explicit accounts file path
   const explicitPath = getConfigValue("accounts_file") || getConfigValue("accounts-file");
-  if (explicitPath && fs.existsSync(explicitPath)) {
-    _cached = parseAccountsFile(explicitPath);
+  if (explicitPath) {
+    if (fs.existsSync(explicitPath)) {
+      _cached = parseAccountsFile(explicitPath);
+      return _cached;
+    }
+    console.error(`Specified accounts file not found: ${explicitPath}`);
+    _cached = { accounts: {} };
     return _cached;
   }
 
   // Check default config paths
   for (const configPath of CONFIG_PATHS) {
     if (fs.existsSync(configPath)) {
-      _cached = parseAccountsFile(configPath);
-      return _cached;
+      const parsed = parseAccountsFile(configPath);
+      if (Object.keys(parsed.accounts).length > 0) {
+        _cached = parsed;
+        return _cached;
+      }
     }
   }
 
   // Fallback: single token from CLI/env (backward compatible)
-  const singleToken = getConfigValue("clarity_api_token");
+  const singleToken = getConfigValue("clarity_api_token")?.trim();
   if (singleToken) {
     _cached = {
       default: "default",
@@ -66,24 +81,53 @@ function parseAccountsFile(filePath: string): AccountsConfig {
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(raw);
 
-    if (!parsed.accounts || typeof parsed.accounts !== "object") {
-      console.error(`Invalid accounts config: missing "accounts" object in ${filePath}`);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      !parsed.accounts ||
+      typeof parsed.accounts !== "object" ||
+      Array.isArray(parsed.accounts)
+    ) {
+      console.error(`Invalid accounts config: missing or invalid "accounts" object in ${filePath}`);
       return { accounts: {} };
     }
 
-    // Validate each entry has a token
+    // Validate each entry has a non-empty token
     const accounts: Record<string, AccountEntry> = {};
     for (const [domain, entry] of Object.entries(parsed.accounts)) {
+      const cleanDomain = domain.trim();
+      if (!cleanDomain) {
+        console.error(`Skipping account with empty domain name in ${filePath}`);
+        continue;
+      }
       const e = entry as any;
-      if (typeof e?.token === "string" && e.token.length > 0) {
-        accounts[domain] = { token: e.token };
+      if (typeof e?.token === "string" && e.token.trim().length > 0) {
+        accounts[cleanDomain] = { token: e.token.trim() };
       } else {
         console.error(`Skipping account "${domain}": missing or empty token`);
       }
     }
 
+    // Validate default account points to an existing account
+    let defaultAccount: string | undefined;
+    if (typeof parsed.default === "string" && parsed.default.trim().length > 0) {
+      const cleanDefault = parsed.default.trim();
+      if (accounts[cleanDefault]) {
+        defaultAccount = cleanDefault;
+      } else {
+        const lower = cleanDefault.toLowerCase();
+        const matched = Object.keys(accounts).find((d) => d.toLowerCase() === lower);
+        if (matched) {
+          defaultAccount = matched;
+        } else {
+          console.error(`Default account "${parsed.default}" not found in configured accounts.`);
+        }
+      }
+    }
+
     return {
-      default: parsed.default || undefined,
+      default: defaultAccount,
       accounts,
     };
   } catch (err) {
@@ -102,13 +146,15 @@ export function resolveToken(account?: string): { token: string; account: string
 
   if (domains.length === 0) return null;
 
+  const trimmedAccount = account?.trim();
+
   // If account specified, look it up directly
-  if (account) {
-    const entry = config.accounts[account];
-    if (entry) return { token: entry.token, account };
+  if (trimmedAccount) {
+    const entry = config.accounts[trimmedAccount];
+    if (entry) return { token: entry.token, account: trimmedAccount };
 
     // Try case-insensitive match
-    const lower = account.toLowerCase();
+    const lower = trimmedAccount.toLowerCase();
     for (const [domain, entry] of Object.entries(config.accounts)) {
       if (domain.toLowerCase() === lower) {
         return { token: entry.token, account: domain };

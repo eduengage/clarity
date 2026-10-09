@@ -66,12 +66,20 @@ export const tryAsync = async (
   init?: RequestInit | undefined,
 ): Promise<ToolResult> => {
   // If no auth header was provided directly in request init, validate configured token
-  const hasAuthHeader = Boolean(
-    init?.headers &&
-      (("Authorization" in init.headers && (init.headers as any).Authorization) ||
-        (init.headers instanceof Headers && init.headers.get("Authorization")) ||
-        (Array.isArray(init.headers) && (init.headers as [string, string][]).some(([k]) => k.toLowerCase() === "authorization")))
-  );
+  let hasAuthHeader = false;
+  if (init?.headers) {
+    if (init.headers instanceof Headers) {
+      hasAuthHeader = Boolean(init.headers.get("authorization"));
+    } else if (Array.isArray(init.headers)) {
+      hasAuthHeader = (init.headers as [string, string][]).some(
+        ([k, v]) => k.toLowerCase() === "authorization" && Boolean(v),
+      );
+    } else if (typeof init.headers === "object") {
+      hasAuthHeader = Object.entries(init.headers).some(
+        ([k, v]) => k.toLowerCase() === "authorization" && Boolean(v),
+      );
+    }
+  }
 
   if (!hasAuthHeader && !getConfigValue("clarity_api_token")) {
     return textResult(

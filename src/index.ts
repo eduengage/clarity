@@ -101,13 +101,24 @@ server.tool(
     openWorldHint: false
   },
   async ({ filters, sortBy, count, account }) => {
-    const now = new Date().toISOString();
+    const now = new Date();
+    const endDate = filters?.date?.end ? new Date(filters.date.end) : now;
+    let startDate: Date;
 
-    const endDate = new Date(filters?.date?.end || now);
-    const startDate = new Date(filters?.date?.start || now);
-
-    if (!filters?.date?.start) {
+    if (filters?.date?.start) {
+      startDate = new Date(filters.date.start);
+    } else {
+      startDate = new Date(endDate.getTime());
       startDate.setDate(endDate.getDate() - 2);
+    }
+
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      return {
+        content: [{
+          type: "text",
+          text: "Invalid date provided. Start and end dates must be valid ISO 8601 timestamps.",
+        }],
+      };
     }
 
     return await listSessionRecordingsAsync(startDate, endDate, filters, sortBy, count, account);
@@ -149,6 +160,13 @@ async function main() {
 
   console.error("Clarity MCP Server (multi-account) running on stdio...");
 }
+
+// Prevent unhandled EPIPE errors when stdio pipe closes
+process.stdout.on("error", (err: any) => {
+  if (err?.code === "EPIPE") {
+    process.exit(0);
+  }
+});
 
 // Run the server
 main().catch((error) => {

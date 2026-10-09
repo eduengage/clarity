@@ -8,7 +8,7 @@ import {
   type SortOptionsType,
   SortOptionsEnum
 } from "./types.js";
-import { tryAsync } from "./utils.js";
+import { getConfigValue, tryAsync } from "./utils.js";
 import { resolveToken, listAccounts, getDefaultAccount } from "./accounts.js";
 
 function resolveTokenOrError(account?: string): { token: string; account: string } {
@@ -17,12 +17,18 @@ function resolveTokenOrError(account?: string): { token: string; account: string
 
   const accounts = listAccounts();
   if (accounts.length === 0) {
+    const singleToken = getConfigValue("clarity_api_token")?.trim();
+    if (singleToken) {
+      return { token: singleToken, account: "default" };
+    }
+
     throw new Error(
       "No Clarity accounts configured. Create ~/.clarity-mcp/accounts.json or pass --clarity_api_token."
     );
   }
 
-  if (!account) {
+  const trimmedAccount = account?.trim();
+  if (!trimmedAccount) {
     throw new Error(
       `Multiple accounts configured but no account specified and no default set. ` +
       `Available accounts: ${accounts.join(", ")}. ` +
@@ -58,7 +64,9 @@ export async function queryAnalyticsDashboardAsync(
   if (result?.content?.[0]?.type === "text") {
     try {
       const data = JSON.parse(result.content[0].text);
-      result.content[0].text = JSON.stringify({ _account: resolvedAccount, ...data }, null, 2);
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        result.content[0].text = JSON.stringify({ _account: resolvedAccount, ...data }, null, 2);
+      }
     } catch { /* leave as-is if not valid JSON */ }
   }
 
@@ -78,10 +86,14 @@ export async function queryDocumentationAsync(query: string): Promise<any> {
   }
 
   if (!token) {
+    token = getConfigValue("clarity_api_token")?.trim();
+  }
+
+  if (!token) {
     return {
       content: [{
         type: "text",
-        text: "No Clarity API token available. Configure at least one account.",
+        text: "No Clarity API token available. Configure at least one account or set CLARITY_API_TOKEN.",
       }],
     };
   }
@@ -106,7 +118,18 @@ export async function listSessionRecordingsAsync(
   count: number,
   account?: string,
 ): Promise<any> {
+  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+    return {
+      content: [{
+        type: "text",
+        text: "Invalid date provided. Start and end dates must be valid ISO 8601 timestamps.",
+      }],
+    };
+  }
+
   const { token, account: resolvedAccount } = resolveTokenOrError(account);
+
+  const sortValue = SortOptionsEnum[sortBy] ?? SortOptionsEnum.SessionStart_DESC;
 
   const result = await tryAsync(SESSION_RECORDINGS_URL, {
     method: 'POST',
@@ -115,7 +138,7 @@ export async function listSessionRecordingsAsync(
       'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
-      sortBy: SortOptionsEnum[sortBy],
+      sortBy: sortValue,
       start: startDate.toISOString(),
       end: endDate.toISOString(),
       filters: filters,
@@ -127,7 +150,9 @@ export async function listSessionRecordingsAsync(
   if (result?.content?.[0]?.type === "text") {
     try {
       const data = JSON.parse(result.content[0].text);
-      result.content[0].text = JSON.stringify({ _account: resolvedAccount, ...data }, null, 2);
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        result.content[0].text = JSON.stringify({ _account: resolvedAccount, ...data }, null, 2);
+      }
     } catch { /* leave as-is */ }
   }
 
