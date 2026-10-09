@@ -65,8 +65,15 @@ export const tryAsync = async (
   input: string | URL | Request,
   init?: RequestInit | undefined,
 ): Promise<ToolResult> => {
-  // Validate the same environment/command-line token configuration used by the request layer.
-  if (!getConfigValue("clarity_api_token")) {
+  // If no auth header was provided directly in request init, validate configured token
+  const hasAuthHeader = Boolean(
+    init?.headers &&
+      (("Authorization" in init.headers && (init.headers as any).Authorization) ||
+        (init.headers instanceof Headers && init.headers.get("Authorization")) ||
+        (Array.isArray(init.headers) && (init.headers as [string, string][]).some(([k]) => k.toLowerCase() === "authorization")))
+  );
+
+  if (!hasAuthHeader && !getConfigValue("clarity_api_token")) {
     return textResult(
       "No Clarity API token provided. Configure CLARITY_API_TOKEN or pass --clarity_api_token on the command line.",
     );
