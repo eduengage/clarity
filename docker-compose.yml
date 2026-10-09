@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  clarity-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: eduengage/clarity:latest
+    container_name: clarity-mcp
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # Server & Transport
+      - PORT=3000
+      - TRANSPORT=http
+      - SERVER_BASE_URL=${SERVER_BASE_URL:-http://localhost:3000}
+
+      # Inbound Access Control (Google Workspace)
+      - ALLOWED_DOMAIN=${ALLOWED_DOMAIN:-eduengage.com}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - TOKEN_SECRET=${TOKEN_SECRET}
+
+      # Optional Pre-Shared Agency Key (for CI or direct admin access)
+      - EDUENGAGE_AGENCY_KEY=${EDUENGAGE_AGENCY_KEY}
+
+      # Central Microsoft Clarity Client Accounts (JSON string format)
+      # Format: {"default":"site.com","accounts":{"site.com":{"token":"clarity-token"}}}
+      - ACCOUNTS_CONFIG_JSON=${ACCOUNTS_CONFIG_JSON}
+
+    # Optional: Mount accounts.json file instead of ACCOUNTS_CONFIG_JSON env var
+    volumes:
+      - clarity-config:/etc/clarity:ro
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  clarity-config:
+    driver: local

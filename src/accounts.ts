@@ -36,7 +36,17 @@ export function resetAccountsCache(): void {
 export function loadAccounts(): AccountsConfig {
   if (_cached) return _cached;
 
-  // Check for explicit accounts file path
+  // 1. Check for ACCOUNTS_CONFIG_JSON environment variable or argument
+  const envJson = process.env.ACCOUNTS_CONFIG_JSON || getConfigValue("accounts_config_json") || getConfigValue("accounts_json");
+  if (envJson && envJson.trim().length > 0) {
+    const parsed = parseAccountsJson(envJson, "ACCOUNTS_CONFIG_JSON environment variable");
+    if (Object.keys(parsed.accounts).length > 0) {
+      _cached = parsed;
+      return _cached;
+    }
+  }
+
+  // 2. Check for explicit accounts file path
   const explicitPath = getConfigValue("accounts_file") || getConfigValue("accounts-file");
   if (explicitPath) {
     if (fs.existsSync(explicitPath)) {
@@ -48,7 +58,7 @@ export function loadAccounts(): AccountsConfig {
     return _cached;
   }
 
-  // Check default config paths
+  // 3. Check default config paths
   for (const configPath of CONFIG_PATHS) {
     if (fs.existsSync(configPath)) {
       const parsed = parseAccountsFile(configPath);
@@ -79,6 +89,15 @@ export function loadAccounts(): AccountsConfig {
 function parseAccountsFile(filePath: string): AccountsConfig {
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
+    return parseAccountsJson(raw, filePath);
+  } catch (err) {
+    console.error(`Failed to read accounts config at ${filePath}:`, err);
+    return { accounts: {} };
+  }
+}
+
+export function parseAccountsJson(raw: string, sourceName = "json string"): AccountsConfig {
+  try {
     const parsed = JSON.parse(raw);
 
     if (
@@ -89,7 +108,7 @@ function parseAccountsFile(filePath: string): AccountsConfig {
       typeof parsed.accounts !== "object" ||
       Array.isArray(parsed.accounts)
     ) {
-      console.error(`Invalid accounts config: missing or invalid "accounts" object in ${filePath}`);
+      console.error(`Invalid accounts config: missing or invalid "accounts" object in ${sourceName}`);
       return { accounts: {} };
     }
 
@@ -98,7 +117,7 @@ function parseAccountsFile(filePath: string): AccountsConfig {
     for (const [domain, entry] of Object.entries(parsed.accounts)) {
       const cleanDomain = domain.trim();
       if (!cleanDomain) {
-        console.error(`Skipping account with empty domain name in ${filePath}`);
+        console.error(`Skipping account with empty domain name in ${sourceName}`);
         continue;
       }
       const e = entry as any;
@@ -131,7 +150,7 @@ function parseAccountsFile(filePath: string): AccountsConfig {
       accounts,
     };
   } catch (err) {
-    console.error(`Failed to parse accounts config at ${filePath}:`, err);
+    console.error(`Failed to parse accounts config at ${sourceName}:`, err);
     return { accounts: {} };
   }
 }

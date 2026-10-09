@@ -141,6 +141,9 @@ server.tool(
   }
 );
 
+import { startHttpServer } from "./server-http.js";
+import { getConfigValue } from "./utils.js";
+
 // Main function
 async function main() {
   const config = loadAccounts();
@@ -152,13 +155,23 @@ async function main() {
       console.error(`Default account: ${config.default}`);
     }
   } else {
-    console.error("No Clarity accounts configured. Use ~/.clarity-mcp/accounts.json or --clarity_api_token");
+    console.error("No Clarity accounts configured. Use ACCOUNTS_CONFIG_JSON, ~/.clarity-mcp/accounts.json or --clarity_api_token");
   }
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const transportMode = process.env.TRANSPORT || getConfigValue("transport");
+  const isHttpMode =
+    transportMode === "http" ||
+    transportMode === "sse" ||
+    Boolean(process.env.PORT) ||
+    Boolean(getConfigValue("port"));
 
-  console.error("Clarity MCP Server (multi-account) running on stdio...");
+  if (isHttpMode) {
+    startHttpServer(server);
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Clarity MCP Server running on stdio...");
+  }
 }
 
 // Prevent unhandled EPIPE errors when stdio pipe closes
