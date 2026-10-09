@@ -63,45 +63,70 @@ export function createSessionToken(email: string, domain: string, daysValid = DE
 }
 
 /**
+ * Strictly validate that an email address belongs exactly to the allowed domain.
+ * Disallows subdomains (e.g. user@sub.eduengage.com), multiple @ symbols, or prefix/suffix attacks.
+ */
+export function isValidEmailForDomain(email: string, allowedDomain: string): boolean {
+  if (typeof email !== "string") return false;
+  const normalized = email.trim().toLowerCase();
+  const parts = normalized.split("@");
+  if (parts.length !== 2) return false;
+  const [localPart, domainPart] = parts;
+  if (!localPart || !domainPart) return false;
+  return domainPart === allowedDomain.trim().toLowerCase();
+}
+
+/**
  * Verify and decode an EduEngage session token.
  */
 export function verifySessionToken(token: string): AuthenticatedUser | null {
-  if (!token.startsWith("eet_")) {
-    return null;
-  }
-
-  const raw = token.slice(4);
-  const parts = raw.split(".");
-  if (parts.length !== 2) {
-    return null;
-  }
-
-  const [encodedPayload, providedSignature] = parts as [string, string];
-  const expectedSignature = crypto
-    .createHmac("sha256", getTokenSecret())
-    .update(encodedPayload)
-    .digest("base64url");
-
-  if (!crypto.timingSafeEqual(Buffer.from(providedSignature), Buffer.from(expectedSignature))) {
-    return null;
-  }
-
   try {
+    if (!token || typeof token !== "string" || !token.startsWith("eet_")) {
+      return null;
+    }
+
+    const raw = token.slice(4);
+    const parts = raw.split(".");
+    if (parts.length !== 2) {
+      return null;
+    }
+
+    const [encodedPayload, providedSignature] = parts as [string, string];
+    if (!encodedPayload || !providedSignature) {
+      return null;
+    }
+
+    const expectedSignature = crypto
+      .createHmac("sha256", getTokenSecret())
+      .update(encodedPayload)
+      .digest("base64url");
+
+    const provBuf = Buffer.from(providedSignature);
+    const expBuf = Buffer.from(expectedSignature);
+
+    // Constant-time comparison with length guard to prevent RangeError
+    if (provBuf.length !== expBuf.length || !crypto.timingSafeEqual(provBuf, expBuf)) {
+      return null;
+    }
+
     const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as SessionTokenPayload;
     const now = Math.floor(Date.now() / 1000);
 
-    if (!payload.exp || payload.exp < now) {
+    if (!payload.exp || typeof payload.exp !== "number" || payload.exp < now) {
       return null; // Expired
     }
 
     const allowedDomain = getAllowedDomain().toLowerCase();
-    if (payload.domain !== allowedDomain || !payload.email.endsWith(`@${allowedDomain}`)) {
+    if (
+      payload.domain?.toLowerCase() !== allowedDomain ||
+      !isValidEmailForDomain(payload.email, allowedDomain)
+    ) {
       return null; // Domain mismatch
     }
 
     return {
-      email: payload.email,
-      domain: payload.domain,
+      email: payload.email.toLowerCase(),
+      domain: allowedDomain,
       source: "session_token",
     };
   } catch {
@@ -114,31 +139,38 @@ export function verifySessionToken(token: string): AuthenticatedUser | null {
  */
 export async function verifyGoogleIdToken(idToken: string): Promise<AuthenticatedUser | null> {
   try {
+    if (!idToken || typeof idToken !== "string") {
+      return null;
+    }
+
     const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
     if (!response.ok) {
       return null;
     }
 
     const data = await response.json();
-    const allowedDomain = getAllowedDomain().toLowerCase();
+    if (!data || typeof data !== "object") {
+      return null;
+    }
 
-    // Verify domain: data.hd must match allowed domain and email must belong to domain
-    const userDomain = (data.hd || "").toLowerCase();
-    const email = (data.email || "").toLowerCase();
+    const allowedDomain = getAllowedDomain().toLowerCase();
+    const userDomain = typeof data.hd === "string" ? data.hd.toLowerCase() : "";
+    const email = typeof data.email === "string" ? data.email.toLowerCase() : "";
     const emailVerified = data.email_verified === "true" || data.email_verified === true;
 
     if (!emailVerified) {
       return null;
     }
 
-    if (userDomain !== allowedDomain && !email.endsWith(`@${allowedDomain}`)) {
+    // Strictly require BOTH hosted domain (hd) and email to match allowedDomain
+    if (userDomain !== allowedDomain || !isValidEmailForDomain(email, allowedDomain)) {
       return null;
     }
 
     return {
       email,
-      name: data.name,
-      domain: userDomain || allowedDomain,
+      name: typeof data.name === "string" ? data.name : undefined,
+      domain: allowedDomain,
       source: "google_id_token",
     };
   } catch (error) {
@@ -158,8 +190,9 @@ export async function authenticateRequest(headers: Record<string, string | strin
   const allowedDomain = getAllowedDomain().toLowerCase();
 
   // 1. Check Cloudflare Access / Google Cloud IAP Header
-  const proxyEmail = headers["cf-access-authenticated-user-email"] || headers["x-goog-authenticated-user-email"];
-  if (typeof proxyEmail === "string" && proxyEmail.trim().toLowerCase().endsWith(`@${allowedDomain}`)) {
+  const rawProxy = headers["cf-access-authenticated-user-email"] ?? headers["x-goog-authenticated-user-email"];
+  const proxyEmail = Array.isArray(rawProxy) ? rawProxy[0] : rawProxy;
+  if (typeof proxyEmail === "string" && isValidEmailForDomain(proxyEmail, allowedDomain)) {
     return {
       email: proxyEmail.trim().toLowerCase(),
       domain: allowedDomain,
@@ -167,15 +200,20 @@ export async function authenticateRequest(headers: Record<string, string | strin
     };
   }
 
-  // 2. Extract Authorization header
-  const authHeader = headers["authorization"] || headers["Authorization"];
+  // 2. Extract Authorization header (case-insensitive "Bearer <token>")
+  const authHeader = headers["authorization"] ?? headers["Authorization"];
   const authValue = Array.isArray(authHeader) ? authHeader[0] : authHeader;
 
-  if (!authValue || !authValue.startsWith("Bearer ")) {
+  if (typeof authValue !== "string") {
     return null;
   }
 
-  const token = authValue.slice(7).trim();
+  const bearerMatch = authValue.match(/^Bearer\s+(.+)$/i);
+  if (!bearerMatch || !bearerMatch[1]) {
+    return null;
+  }
+
+  const token = bearerMatch[1].trim();
   if (!token) {
     return null;
   }

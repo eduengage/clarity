@@ -16,6 +16,12 @@ export interface HttpServerOptions {
   serverBaseUrl?: string;
 }
 
+interface SseSession {
+  transport: SSEServerTransport;
+  userEmail: string;
+  isAdmin: boolean;
+}
+
 export function startHttpServer(server: McpServer, options: HttpServerOptions = {}): http.Server {
   const port = options.port || Number(process.env.PORT) || Number(getConfigValue("port", "3000")) || 3000;
   const serverBaseUrl =
@@ -24,8 +30,8 @@ export function startHttpServer(server: McpServer, options: HttpServerOptions = 
     getConfigValue("server_base_url", `http://localhost:${port}`) ||
     `http://localhost:${port}`;
 
-  // Track active SSE transports by sessionId
-  const transports = new Map<string, SSEServerTransport>();
+  // Track active SSE transports by sessionId with ownership metadata
+  const transports = new Map<string, SseSession>();
 
   const httpServer = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || "/", "http://localhost");
@@ -128,17 +134,33 @@ export function startHttpServer(server: McpServer, options: HttpServerOptions = 
 
         // Create SSE transport directing messages to /messages endpoint
         const transport = new SSEServerTransport("/messages", res);
-        transports.set(transport.sessionId, transport);
-
-        transport.onclose = () => {
-          console.error(`[SSE Close] Session closed: ${transport.sessionId}`);
-          transports.delete(transport.sessionId);
+        const sessionId = transport.sessionId;
+        const sessionEntry: SseSession = {
+          transport,
+          userEmail: user.email,
+          isAdmin: user.source === "admin_key",
         };
+        transports.set(sessionId, sessionEntry);
+
+        const cleanup = () => {
+          if (transports.has(sessionId)) {
+            console.error(`[SSE Close] Session closed: ${sessionId}`);
+            transports.delete(sessionId);
+          }
+        };
+
+        transport.onclose = cleanup;
+        res.on("close", cleanup);
 
         try {
           await server.connect(transport);
         } catch (err) {
           console.error(`[SSE Error] Failed to connect transport:`, err);
+          cleanup();
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Failed to establish SSE stream" }));
+          }
         }
         return;
       }
@@ -152,15 +174,22 @@ export function startHttpServer(server: McpServer, options: HttpServerOptions = 
           return;
         }
 
-        const transport = transports.get(sessionId);
-        if (!transport) {
+        const session = transports.get(sessionId);
+        if (!session) {
           res.writeHead(404, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: `Session not found: ${sessionId}` }));
           return;
         }
 
+        // Verify session ownership: only the user who established the stream or an admin can post to it
+        if (!session.isAdmin && session.userEmail !== user.email && user.source !== "admin_key") {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Forbidden: session belongs to another user" }));
+          return;
+        }
+
         try {
-          await transport.handlePostMessage(req, res);
+          await session.transport.handlePostMessage(req, res);
         } catch (err) {
           console.error(`[Messages Error] Error handling post message:`, err);
           if (!res.headersSent) {
@@ -186,6 +215,16 @@ export function startHttpServer(server: McpServer, options: HttpServerOptions = 
         2
       )
     );
+  });
+
+  // Clean up all active transports when server closes
+  httpServer.on("close", () => {
+    for (const session of transports.values()) {
+      try {
+        session.transport.close();
+      } catch {}
+    }
+    transports.clear();
   });
 
   httpServer.listen(port, () => {
@@ -242,11 +281,11 @@ function renderLoginPage(res: http.ServerResponse, serverBaseUrl: string): void 
       <span class="badge">Internal Only</span>
     </div>
     <h1>Clarity MCP Server</h1>
-    <p>Sign in with your <strong>@${allowedDomain}</strong> Google Workspace account to generate your Claude Desktop credentials.</p>
+    <p>Sign in with your <strong>@${escapeHtml(allowedDomain)}</strong> Google Workspace account to generate your Claude Desktop credentials.</p>
     
     ${
       googleOAuthUrl
-        ? `<a href="${googleOAuthUrl}" class="btn-google">
+        ? `<a href="${escapeHtml(googleOAuthUrl)}" class="btn-google">
              <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.039l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/></svg>
              Sign in with Google Workspace
            </a>`
@@ -256,7 +295,7 @@ function renderLoginPage(res: http.ServerResponse, serverBaseUrl: string): void 
     }
 
     <div class="notice">
-      🔒 Access is strictly restricted to active team members with an @${allowedDomain} email.
+      🔒 Access is strictly restricted to active team members with an @${escapeHtml(allowedDomain)} email.
     </div>
   </div>
 </body>
@@ -286,6 +325,9 @@ function renderSuccessPage(
     null,
     2
   );
+
+  const safeEmail = escapeHtml(user.email);
+  const avatarLetter = escapeHtml(user.email.charAt(0).toUpperCase());
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -326,10 +368,10 @@ function renderSuccessPage(
   <div class="card">
     <div class="header">
       <div class="user-info">
-        <div class="avatar">${user.email.charAt(0).toUpperCase()}</div>
+        <div class="avatar">${avatarLetter}</div>
         <div>
           <h1>Authenticated</h1>
-          <div class="email">${user.email}</div>
+          <div class="email">${safeEmail}</div>
         </div>
       </div>
       <span class="success-badge">✓ Google Verified</span>
@@ -388,7 +430,7 @@ function renderErrorPage(res: http.ServerResponse, error: string): void {
   <div class="card">
     <h1>Authentication Failed</h1>
     <p>${escapeHtml(error)}</p>
-    <p>Please ensure you are signing in with an active <strong>@${allowedDomain}</strong> account.</p>
+    <p>Please ensure you are signing in with an active <strong>@${escapeHtml(allowedDomain)}</strong> account.</p>
     <a href="/auth">← Back to Sign In</a>
   </div>
 </body>

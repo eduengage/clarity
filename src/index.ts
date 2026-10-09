@@ -174,6 +174,14 @@ async function main() {
   }
 }
 
+// Handle graceful termination in Docker containers (PID 1) and CLI
+const shutdown = () => {
+  console.error("Shutting down Clarity MCP Server...");
+  process.exit(0);
+};
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
 // Prevent unhandled EPIPE errors when stdio pipe closes
 process.stdout.on("error", (err: any) => {
   if (err?.code === "EPIPE") {

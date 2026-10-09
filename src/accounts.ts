@@ -13,6 +13,7 @@ export interface AccountsConfig {
 }
 
 const CONFIG_PATHS = [
+  "/etc/clarity/accounts.json",
   path.join(os.homedir(), ".clarity-mcp", "accounts.json"),
   path.join(os.homedir(), ".config", "clarity-mcp", "accounts.json"),
 ];
@@ -120,9 +121,15 @@ export function parseAccountsJson(raw: string, sourceName = "json string"): Acco
         console.error(`Skipping account with empty domain name in ${sourceName}`);
         continue;
       }
-      const e = entry as any;
-      if (typeof e?.token === "string" && e.token.trim().length > 0) {
-        accounts[cleanDomain] = { token: e.token.trim() };
+      let token: string | undefined;
+      if (typeof entry === "string" && entry.trim().length > 0) {
+        token = entry.trim();
+      } else if (typeof (entry as any)?.token === "string" && (entry as any).token.trim().length > 0) {
+        token = (entry as any).token.trim();
+      }
+
+      if (token) {
+        accounts[cleanDomain] = { token };
       } else {
         console.error(`Skipping account "${domain}": missing or empty token`);
       }

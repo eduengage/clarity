@@ -92,3 +92,69 @@ test("OPTIONS / preflight returns 204 with CORS headers", async () => {
   assert.equal(res.headers.get("access-control-allow-origin"), "*");
   assert.match(res.headers.get("access-control-allow-headers") || "", /Authorization/);
 });
+
+test("GET /auth/callback without code returns 403 HTML error page", async () => {
+  const res = await fetch(`${baseUrl}/auth/callback`);
+  assert.equal(res.status, 403);
+  const html = await res.text();
+  assert.match(html, /Authentication Failed/);
+  assert.match(html, /Missing authorization code/);
+});
+
+test("Rapid connect and disconnect on /sse does not crash server", async () => {
+  const token = createSessionToken("speedy@eduengage.com", "eduengage.com", 30);
+  const controller = new AbortController();
+
+  // Start connection and immediately abort
+  const fetchPromise = fetch(`${baseUrl}/sse`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: controller.signal,
+  });
+
+  // Abort immediately
+  controller.abort();
+
+  await assert.rejects(fetchPromise);
+
+  // Verify server is still healthy and responsive
+  const healthRes = await fetch(`${baseUrl}/health`);
+  assert.equal(healthRes.status, 200);
+});
+
+test("POST /messages rejects cross-session message submission with 403", async () => {
+  // Create two different users
+  const tokenAlice = createSessionToken("alice@eduengage.com", "eduengage.com", 30);
+  const tokenBob = createSessionToken("bob@eduengage.com", "eduengage.com", 30);
+
+  // Alice connects to SSE to establish a session
+  const aliceController = new AbortController();
+  const aliceRes = await fetch(`${baseUrl}/sse`, {
+    headers: { Authorization: `Bearer ${tokenAlice}` },
+    signal: aliceController.signal,
+  });
+
+  // Read first chunk to get the endpoint event with sessionId
+  const reader = aliceRes.body.getReader();
+  const { value } = await reader.read();
+  const text = new TextDecoder().decode(value);
+  const match = text.match(/sessionId=([a-f0-9-]+)/);
+  assert.ok(match, "Expected sessionId in SSE endpoint event");
+  const aliceSessionId = match[1];
+
+  // Bob tries to post to Alice's sessionId
+  const bobPostRes = await fetch(`${baseUrl}/messages?sessionId=${aliceSessionId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${tokenBob}`,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+  });
+
+  assert.equal(bobPostRes.status, 403);
+  const bobData = await bobPostRes.json();
+  assert.match(bobData.error, /Forbidden/);
+
+  // Clean up Alice's connection
+  aliceController.abort();
+});

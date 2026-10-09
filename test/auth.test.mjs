@@ -139,3 +139,115 @@ test("verifyGoogleIdToken rejects foreign Google account", async () => {
   const user = await verifyGoogleIdToken("fake-jwt-token");
   assert.equal(user, null);
 });
+
+test("verifyGoogleIdToken rejects account when hd matches but email domain is foreign", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      email: "attacker@evil.com",
+      email_verified: "true",
+      hd: "eduengage.com",
+    }),
+  });
+
+  const user = await verifyGoogleIdToken("fake-jwt-token");
+  assert.equal(user, null);
+});
+
+test("verifyGoogleIdToken rejects account when email matches but hd is foreign or missing", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      email: "victim@eduengage.com",
+      email_verified: "true",
+      hd: "attacker.com",
+    }),
+  });
+
+  const user = await verifyGoogleIdToken("fake-jwt-token");
+  assert.equal(user, null);
+});
+
+test("verifyGoogleIdToken rejects subdomain email", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      email: "user@sub.eduengage.com",
+      email_verified: "true",
+      hd: "eduengage.com",
+    }),
+  });
+
+  const user = await verifyGoogleIdToken("fake-jwt-token");
+  assert.equal(user, null);
+});
+
+test("verifySessionToken safely rejects signatures with mismatched byte lengths without throwing RangeError", () => {
+  const token = createSessionToken("john@eduengage.com", "eduengage.com", 30);
+  const [prefix, sig] = token.split(".");
+
+  // Truncated signature (shorter than expected 43 bytes)
+  const shortSigToken = `${prefix}.${sig.slice(0, 10)}`;
+  assert.equal(verifySessionToken(shortSigToken), null);
+
+  // Extended signature (longer than expected 43 bytes)
+  const longSigToken = `${prefix}.${sig}extra`;
+  assert.equal(verifySessionToken(longSigToken), null);
+
+  // Empty signature
+  assert.equal(verifySessionToken(`${prefix}.`), null);
+
+  // Single char signature
+  assert.equal(verifySessionToken(`${prefix}.a`), null);
+});
+
+test("verifySessionToken rejects malformed token strings without throwing", () => {
+  assert.equal(verifySessionToken(""), null);
+  assert.equal(verifySessionToken("not-a-token"), null);
+  assert.equal(verifySessionToken("eet_nodotshere"), null);
+  assert.equal(verifySessionToken("eet_too.many.dots.in.token"), null);
+  assert.equal(verifySessionToken("eet_invalidbase64!@#.signature"), null);
+});
+
+test("authenticateRequest supports case-insensitive 'bearer' prefix", async () => {
+  const token = createSessionToken("dev@eduengage.com", "eduengage.com", 30);
+  const user = await authenticateRequest({
+    authorization: `bearer ${token}`,
+  });
+  assert.ok(user);
+  assert.equal(user.email, "dev@eduengage.com");
+});
+
+test("authenticateRequest handles malformed Authorization headers gracefully", async () => {
+  assert.equal(await authenticateRequest({ authorization: "Bearer" }), null);
+  assert.equal(await authenticateRequest({ authorization: "Bearer " }), null);
+  assert.equal(await authenticateRequest({ authorization: "Basic dXNlcjpwYXNz" }), null);
+  assert.equal(await authenticateRequest({ authorization: "Bearer non-base64-garbage" }), null);
+});
+
+test("authenticateRequest rejects subdomain and multi-at proxy headers", async () => {
+  assert.equal(
+    await authenticateRequest({ "cf-access-authenticated-user-email": "user@sub.eduengage.com" }),
+    null
+  );
+  assert.equal(
+    await authenticateRequest({ "cf-access-authenticated-user-email": "evil@attacker.com@eduengage.com" }),
+    null
+  );
+  assert.equal(
+    await authenticateRequest({ "cf-access-authenticated-user-email": "evil-eduengage.com" }),
+    null
+  );
+  assert.equal(
+    await authenticateRequest({ "cf-access-authenticated-user-email": "@eduengage.com" }),
+    null
+  );
+});
+
+test("authenticateRequest handles array proxy header", async () => {
+  const user = await authenticateRequest({
+    "cf-access-authenticated-user-email": ["sam@eduengage.com", "other@evil.com"],
+  });
+  assert.ok(user);
+  assert.equal(user.email, "sam@eduengage.com");
+});

@@ -179,3 +179,42 @@ test("resolveToken returns null when multiple accounts exist and no default is s
   const resolved = resolveToken();
   assert.equal(resolved, null);
 });
+
+test("loadAccounts parses valid ACCOUNTS_CONFIG_JSON environment variable", () => {
+  process.env.ACCOUNTS_CONFIG_JSON = JSON.stringify({
+    default: "eduengage.com",
+    accounts: {
+      "eduengage.com": { token: "token-agency" },
+      "client.org": { token: "token-client" },
+    },
+  });
+
+  const config = loadAccounts();
+  assert.equal(config.default, "eduengage.com");
+  assert.equal(Object.keys(config.accounts).length, 2);
+  assert.equal(config.accounts["eduengage.com"]?.token, "token-agency");
+  assert.equal(config.accounts["client.org"]?.token, "token-client");
+});
+
+test("loadAccounts supports flat string tokens in accounts mapping", () => {
+  process.env.ACCOUNTS_CONFIG_JSON = JSON.stringify({
+    default: "client.com",
+    accounts: {
+      "client.com": "flat-token-value",
+      "agency.com": { token: "object-token-value" },
+    },
+  });
+
+  const config = loadAccounts();
+  assert.equal(config.accounts["client.com"]?.token, "flat-token-value");
+  assert.equal(config.accounts["agency.com"]?.token, "object-token-value");
+});
+
+test("loadAccounts handles malformed ACCOUNTS_CONFIG_JSON and falls back gracefully", () => {
+  process.env.ACCOUNTS_CONFIG_JSON = "{ bad json syntax";
+  process.env.CLARITY_API_TOKEN = "fallback-token";
+
+  const config = loadAccounts();
+  assert.equal(config.default, "default");
+  assert.equal(config.accounts["default"]?.token, "fallback-token");
+});
